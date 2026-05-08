@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Trip Validation
+    function isValidTrip(data) {
+      return data.userId == request.auth.uid &&
+             data.destination is string && data.destination.size() <= 200 &&
+             data.startDate is string &&
+             data.endDate is string &&
+             (!('notes' in data) || data.notes is string) &&
+             (!('packingList' in data) || data.packingList is list);
+    }
+
+    // Itinerary Validation
+    function isValidItinerary(data) {
+      return data.tripId is string && isValidId(data.tripId) &&
+             data.days is list && data.days.size() <= 30;
+    }
+
+    // Connection Test
+    match /_connection_test/test {
+      allow get: if true;
+    }
+
+    match /trips/{tripId} {
+      allow get: if isSignedIn() && isOwner(existing().userId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidTrip(incoming());
+      allow update: if isSignedIn() && isOwner(existing().userId) && isValidTrip(incoming()) &&
+                    incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && isOwner(existing().userId);
+    }
+
+    match /itineraries/{itineraryId} {
+      // Relational Sync: Check parent trip ownership using get()
+      function isTripOwner(tripId) {
+        return get(/databases/$(database)/documents/trips/$(tripId)).data.userId == request.auth.uid;
+      }
+
+      allow get: if isSignedIn() && isTripOwner(existing().tripId);
+      allow list: if isSignedIn() && isTripOwner(resource.data.tripId);
+      allow create: if isSignedIn() && isValidItinerary(incoming()) && isTripOwner(incoming().tripId);
+      allow update: if isSignedIn() && isTripOwner(existing().tripId) && 
+                    isValidItinerary(incoming()) && incoming().tripId == existing().tripId;
+      allow delete: if isSignedIn() && isTripOwner(existing().tripId);
+    }
+  }
+}

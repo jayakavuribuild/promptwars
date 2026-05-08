@@ -1,0 +1,84 @@
+{
+  "entities": {
+    "Trip": {
+      "title": "Trip",
+      "description": "A planned travel itinerary",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user who owns this trip" },
+        "destination": { "type": "string", "description": "City or region name" },
+        "startDate": { "type": "string", "format": "date", "description": "Start date of the trip" },
+        "endDate": { "type": "string", "format": "date", "description": "End date of the trip" },
+        "budget": { "type": "string", "enum": ["budget", "moderate", "luxury"], "description": "Budget level" },
+        "preferences": {
+          "type": "object",
+          "properties": {
+            "interests": { "type": "array", "items": { "type": "string" } },
+            "pace": { "type": "string", "enum": ["relaxed", "balanced", "active"] }
+          }
+        },
+        "packingList": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": { "type": "string" },
+              "checked": { "type": "boolean" }
+            }
+          }
+        },
+        "notes": { "type": "string", "description": "User notes for the trip" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "destination", "startDate", "endDate"]
+    },
+    "Itinerary": {
+      "title": "Itinerary",
+      "description": "Daily breakdown of activities for a trip",
+      "type": "object",
+      "properties": {
+        "tripId": { "type": "string", "description": "Reference to the Trip document" },
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "dayNumber": { "type": "integer" },
+              "activities": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "time": { "type": "string" },
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "location": {
+                      "type": "object",
+                      "properties": {
+                        "lat": { "type": "number" },
+                        "lng": { "type": "number" },
+                        "name": { "type": "string" }
+                      }
+                    },
+                    "category": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/trips/{tripId}": {
+      "schema": "Trip",
+      "description": "Main trip details"
+    },
+    "/itineraries/{itineraryId}": {
+      "schema": "Itinerary",
+      "description": "Itinerary details linked by tripId"
+    }
+  }
+}
