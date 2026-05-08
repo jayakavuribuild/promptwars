@@ -50,10 +50,11 @@ import {
   Navigation,
   PlaneTakeoff,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Sparkles
 } from 'lucide-react';
 import { auth, db, signInWithGoogle, logout, OperationType, handleFirestoreError, testConnection } from './lib/firebase';
-import { generateItinerary, DayItinerary, ITineraryEvent } from './lib/ai';
+import { generateItinerary, DayItinerary, ITineraryEvent, regenerateDay } from './lib/ai';
 import { cn } from './lib/utils';
 
 const MAPS_API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
@@ -114,14 +115,30 @@ function MarkerWithInfo({ activity }: { activity: ITineraryEvent }) {
 
 function MapView({ itinerary }: { itinerary: DayItinerary[] }) {
   const map = useMap();
+  const mapsLib = useMapsLibrary('maps');
   const allActivities = itinerary.flatMap(day => day.activities);
 
   useEffect(() => {
-    if (!map || allActivities.length === 0) return;
+    if (!map || allActivities.length === 0 || !mapsLib) return;
+    
+    // Auto-fit bounds
     const bounds = new google.maps.LatLngBounds();
     allActivities.forEach(item => bounds.extend(item.location));
     map.fitBounds(bounds, { top: 100, right: 300, bottom: 100, left: 100 });
-  }, [map, allActivities]);
+
+    // Draw Polylines for flow
+    const path = allActivities.map(a => a.location);
+    const polyline = new google.maps.Polyline({
+      path,
+      geodesic: true,
+      strokeColor: '#1c1917',
+      strokeOpacity: 0.4,
+      strokeWeight: 2,
+      map: map
+    });
+
+    return () => polyline.setMap(null);
+  }, [map, allActivities, mapsLib]);
 
   return (
     <Map
@@ -159,6 +176,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'itinerary' | 'packing' | 'notes'>('itinerary');
   const [unitSystem, setUnitSystem] = useState<'metric' | 'imperial'>('metric');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [heroImage, setHeroImage] = useState('https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&q=80&w=2000');
+  const [isRegeneratingDay, setIsRegeneratingDay] = useState<number | null>(null);
+  const [isCopied, setIsCopied] = useState(false);
 
   // Featured Destinations for "Discovery"
   const featuredDestinations = [
@@ -203,6 +223,10 @@ export default function App() {
     try {
       await signInWithGoogle();
     } catch (error: any) {
+      // Don't show error if user just closed the popup
+      if (error?.code === 'auth/popup-closed-by-user') {
+        return;
+      }
       setAuthError(error.message || "Failed to sign in. Please check your browser's popup blocker.");
       console.error("Sign in failed", error);
     }
@@ -263,6 +287,10 @@ export default function App() {
     setPackingList(trip.packingList || []);
     setNotes(trip.notes || '');
     setActiveTab('itinerary');
+    
+    // Update Hero Image dynamically
+    setHeroImage(`https://source.unsplash.com/1600x900/?${encodeURIComponent(trip.destination)},voyage`);
+
     try {
       const itenDoc = await getDoc(doc(db, 'itineraries', trip.id));
       if (itenDoc.exists()) {
@@ -270,6 +298,39 @@ export default function App() {
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, `itineraries/${trip.id}`);
+    }
+  };
+
+  const handleRefineDay = async (dayNumber: number) => {
+    if (!currentTrip || isRegeneratingDay !== null) return;
+    setIsRegeneratingDay(dayNumber);
+    try {
+      const dayData = itinerary.find(d => d.dayNumber === dayNumber);
+      if (!dayData) return;
+
+      const newDay = await regenerateDay(
+        currentTrip.destination,
+        dayNumber,
+        dayData.activities,
+        currentTrip.budget
+      );
+
+      const newItinerary = itinerary.map(d => 
+        d.dayNumber === dayNumber ? newDay : d
+      );
+
+      setItinerary(newItinerary);
+      
+      // Persist
+      await setDoc(doc(db, 'itineraries', currentTrip.id), {
+        tripId: currentTrip.id,
+        days: newItinerary
+      }, { merge: true });
+
+    } catch (error) {
+      console.error("Failed to refine day:", error);
+    } finally {
+      setIsRegeneratingDay(null);
     }
   };
 
@@ -286,15 +347,17 @@ export default function App() {
   };
 
   const handleShare = () => {
+    const shareUrl = window.location.href;
     if (navigator.share) {
       navigator.share({
         title: `Trip to ${currentTrip?.destination}`,
         text: `Check out my travel itinerary for ${currentTrip?.destination}!`,
-        url: window.location.href
+        url: shareUrl
       }).catch(console.error);
     } else {
-      navigator.clipboard.writeText(window.location.href);
-      alert('Link copied to clipboard!');
+      navigator.clipboard.writeText(shareUrl);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
     }
   };
 
@@ -552,21 +615,35 @@ export default function App() {
                           >
                             Export
                           </button>
-                          <button 
-                            onClick={handleShare}
-                            className="px-6 py-2.5 rounded-full bg-stone-950 text-white text-xs font-bold hover:bg-stone-800 transition-all active:scale-95 shadow-lg shadow-stone-200"
-                          >
-                            Share
-                          </button>
+                        <button 
+                          onClick={handleShare}
+                          className="px-6 py-2.5 rounded-full bg-stone-950 text-white text-xs font-bold hover:bg-stone-800 transition-all active:scale-95 shadow-lg shadow-stone-200 min-w-[100px]"
+                        >
+                          {isCopied ? 'Copied!' : 'Share'}
+                        </button>
                         </div>
                       </div>
                       
-                      <div className="flex-1 overflow-x-auto p-8 custom-scrollbar bg-stone-50/20">
+                      <div className="flex-1 overflow-x-auto p-8 custom-scrollbar bg-stone-50/20 print:p-0">
                         {activeTab === 'itinerary' && (
-                          <div className="inline-flex gap-8 pb-4">
+                          <div className="inline-flex gap-8 pb-4 print:flex print:flex-col print:gap-12">
                             {itinerary.map((day) => (
-                              <div key={day.dayNumber} className="w-80 shrink-0 flex flex-col gap-6">
-                                <h4 className="text-stone-400 text-[10px] font-black tracking-[0.3em] uppercase ml-1">Day {day.dayNumber}</h4>
+                              <div key={day.dayNumber} className="w-80 shrink-0 flex flex-col gap-6 print:w-full">
+                                <div className="flex items-center justify-between ml-1">
+                                  <h4 className="text-stone-400 text-[10px] font-black tracking-[0.3em] uppercase">Day {day.dayNumber}</h4>
+                                  <button 
+                                    onClick={() => handleRefineDay(day.dayNumber)}
+                                    disabled={isRegeneratingDay === day.dayNumber}
+                                    className="flex items-center gap-1.5 text-[9px] font-black text-stone-300 hover:text-stone-950 uppercase tracking-widest transition-colors disabled:opacity-50 print:hidden"
+                                  >
+                                    {isRegeneratingDay === day.dayNumber ? (
+                                      <Loader2 className="animate-spin" size={10} />
+                                    ) : (
+                                      <Sparkles size={10} />
+                                    )}
+                                    {isRegeneratingDay === day.dayNumber ? 'Refining...' : 'Refine Day'}
+                                  </button>
+                                </div>
                                 <div className="space-y-6">
                                   {day.activities.map((activity, idx) => (
                                     <motion.div 
@@ -574,7 +651,7 @@ export default function App() {
                                       animate={{ opacity: 1, y: 0 }}
                                       transition={{ delay: idx * 0.05 }}
                                       key={idx} 
-                                      className="group p-6 bg-white rounded-[2rem] border border-stone-100 hover:border-stone-950 hover:shadow-2xl transition-all cursor-default shadow-sm relative overflow-hidden"
+                                      className="group p-6 bg-white rounded-[2rem] border border-stone-100 hover:border-stone-950 hover:shadow-2xl transition-all cursor-default shadow-sm relative overflow-hidden print:shadow-none print:border-stone-200"
                                     >
                                       <div className="flex items-center justify-between mb-4">
                                         <span className="text-[10px] font-black text-stone-400 flex items-center gap-2 uppercase tracking-widest">
@@ -677,9 +754,9 @@ export default function App() {
                     <section className="relative h-[500px] flex items-center justify-center px-12">
                        <div className="absolute inset-0 z-0">
                           <img 
-                            src="https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&q=80&w=2000" 
+                            src={heroImage} 
                             alt="Coastal"
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-cover transition-all duration-1000"
                           />
                           <div className="absolute inset-0 bg-stone-950/20 backdrop-blur-[1px]" />
                        </div>
